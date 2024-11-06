@@ -1,0 +1,1393 @@
+---
+title: "alternative splicing events in pcos"
+author: "yll, cjh" 
+format: 
+  pdf:
+    code-line-numbers: true
+---
+
+# Load packages
+
+```{r}
+library(biomaRt)
+library(corrplot)
+library(FactoMineR)
+library(ggplot2)
+library(RColorBrewer)
+library(ggthemes)
+library(ggsci)
+library(ggrepel)
+library(plyr)
+library(clusterProfiler)
+library(dplyr)
+library(reshape2)
+
+library(org.Hs.eg.db)
+library(tidyverse)
+library(magrittr)
+library(pheatmap)
+library(scatterplot3d)
+```
+
+# Clean raw count data
+
+```{r}
+#|label: raw count 
+
+fcount <- read.table("../data/processed/fcount_gse138518.txt", header = T)
+
+# rename the column
+colnames(fcount)[7:ncol(fcount)] <- gsub("Aligned.sortedByCoord.out.bam","",colnames(fcount)[7:ncol(fcount)])
+
+
+# remove the version id of gene
+fcount$Geneid <- unlist(strsplit(fcount$Geneid,"[.]"))[seq(1, 2*nrow(fcount), 2)]
+
+# remove no expression genes
+fcount <- fcount[apply(fcount[,7:ncol(fcount)], 1, function(x){sum(x>0)>0}),]
+
+# transfer to gene symbol
+## method1: use biomaRt package
+mart <- useMart("ENSEMBL_MART_ENSEMBL",
+                dataset = "hsapiens_gene_ensembl")
+
+ensemblid <- fcount$Geneid
+attributes <- listAttributes(mart)
+
+genelist <- getBM(
+  attributes = c("ensembl_gene_id","external_gene_name",
+                 "gene_biotype"), # can't add entrez id
+  filters = c("ensembl_gene_id"),
+  values = ensemblid,
+  mart = mart)
+
+## method2: use bitr() in clusterProfiler package
+keytypes(org.Hs.eg.db)
+
+genelist2 <- bitr(
+  ensemblid,fromType = 'ENSEMBL',
+  toType = c('ENTREZID','SYMBOL','GENETYPE'),
+  OrgDb='org.Hs.eg.db')
+
+
+# merge gene list and raw count
+colnames(genelist)[1] <- "Geneid"
+fcount <- merge(genelist, fcount)
+
+save(fcount, genelist, genelist2, file = "../data/R/count.Rdata")
+```
+
+## Calculate the FPKM value
+
+$FPKM=\frac{Fragment\ mapped\ to\ the\ gene}{\frac{gene\ length}{10^3}*\frac{total\ fragments}{10^6}} = \frac{Fragment\ mapped\ to\ the\ gene * {10^9}}{gene\ length * total fragments}$
+
+```{r}
+
+kb = as.numeric(fcount$Length)/1000
+
+count <- fcount[,c(1,9:ncol(fcount))]
+rownames(count) <- count$Geneid
+
+rpk <- count[,2:ncol(count)]/kb
+fpkm <- rpk/colSums(count[,2:ncol(count)])*10^6
+
+save(fpkm, file = "../data/R/fpkm.Rdata")
+```
+
+## Merge the information of samples
+
+```{r}
+# load the information of samples
+info <- read_tsv("../data/processed/GSE138518.info.txt") %>% 
+  mutate(across('source_name', str_replace, 'Polycystic ovary syndrome','PCOS')) 
+rownames(info) <- info$Run
+
+info$id <- ave(info$Run, info$source_name, FUN = seq_along)
+info$sample_id <- paste(info$source_name, info$id, sep = "_")
+
+# replace the SRR number with the sample_id
+fpkm <- fpkm %>% set_colnames(info[["sample_id"]])
+
+# merge the gene symbol
+fpkm$Geneid <- rownames(fpkm)
+
+fpkm <- merge(fpkm, genelist, all.x = TRUE)
+
+save(fpkm, file = "../data/R/fpkm.Rdata")
+
+```
+
+# Quality control of samples
+
+## STAR mapping efficiency
+
+```{r}
+rm(list = ls())
+
+star <- read.table("../data/processed/star_effiency_gse138518.txt",
+                   sep = "\t") %>% t() %>% as.data.frame() %>% 
+  dplyr::slice(-1) %>% 
+  set_colnames(c("Run","Total_reads","Unique_mapped_reads","Unique_mapped_ratio","Unique_junction")) %>% 
+  mutate(across("Unique_mapped_ratio", str_replace,"%",""))
+
+star$Unique_mapped_ratio <- as.numeric(star$Unique_mapped_ratio)
+
+info <- read_tsv("../data/processed/GSE138518.info.txt") %>% 
+  mutate(across('source_name', str_replace, 'Polycystic ovary syndrome','PCOS')) 
+star <- merge(star, info[,c("source_name","Run")])
+
+
+ggplot(star, aes(source_name, Unique_mapped_ratio, fill=source_name)) +
+  geom_violin(trim = FALSE) + geom_boxplot(width=.1, fill="white") + geom_point() +
+  #stat_summary(fun.y = median, geom = "point", fill="white", shape=21, size=2.5)+
+  #scale_fill_manual(values = c("#A6CEE3","#B2DF8A")) +
+  theme_bw() + guides(fill=FALSE) + coord_fixed(ratio = 4/40) +
+  ylab("Unique mapped ratio (%)") + xlab("") +
+  ggtitle("Genome mapping ratio") +
+  theme(axis.text = element_text(colour = "black", size = rel(1.5)),
+        axis.title = element_text(size = rel(1.8)),
+        plot.title = element_text(hjust=.5, size = rel(1.8)),
+        plot.margin = unit(c(rep(1,4)),"cm")) +
+  scale_fill_aaas()
+
+# save
+pdf("../results/00_qc/star.ratio.pdf")
+ggplot(star, aes(source_name, Unique_mapped_ratio, fill=source_name)) +
+  geom_violin(trim = FALSE) + geom_boxplot(width=.1, fill="white") + geom_point() +
+  #stat_summary(fun.y = median, geom = "point", fill="white", shape=21, size=2.5)+
+  #scale_fill_manual(values = c("#A6CEE3","#B2DF8A")) +
+  theme_bw() + guides(fill=FALSE) + coord_fixed(ratio = 4/40) +
+  ylab("Unique mapped ratio (%)") + xlab("") +
+  ggtitle("Genome mapping ratio") +
+  theme(axis.text = element_text(colour = "black", size = rel(1.8)),
+        axis.title = element_text(size = rel(2)),
+        plot.title = element_text(hjust=.5, size = rel(2)),
+        plot.margin = unit(c(rep(1,4)),"cm")) +
+  scale_fill_aaas()
+dev.off()
+
+```
+
+## Correlation
+
+```{r fig.cap="Correlation plot"}
+
+load("../data/R/fpkm.Rdata")
+
+cor <- cor(fpkm[,2:12], method = "spearman")
+
+corrplot(cor,method = "circle",type = "lower",
+         tl.col = "black",diag = FALSE,is.corr = TRUE,
+         cl.pos = "b",tl.srt = 45,shade.col = "no",
+         addCoef.col = "black",tl.cex = 1,addgrid.col = "grey",
+         mar = c(0,0,1,1), 
+         number.cex = .5, title = "correlation")
+
+
+pheatmap(cor, display_numbers = T,fontsize = 10, angle_col = 45,
+         cellwidth = 25, cellheight = 25,
+         number_color = "white")
+
+# save
+pdf("../results/00_qc/QC_correlation.pdf")
+corrplot(cor,method = "circle",type = "lower",
+         tl.col = "black",diag = FALSE,is.corr = TRUE,
+         cl.pos = "b",tl.srt = 45,shade.col = "no",
+         addCoef.col = "black",tl.cex = 1,addgrid.col = "grey",
+         mar = c(0,0,1,1), 
+         number.cex = .5, title = "correlation")
+
+pheatmap(cor, display_numbers = T,fontsize = 10, angle_col = 45,
+         cellwidth = 25, cellheight = 25,
+         number_color = "white")
+dev.off()
+
+
+
+```
+
+## PCA
+
+```{r}
+
+fpkm <- fpkm[,2:12]
+
+group <- data.frame(
+  sample = colnames(fpkm),
+  group = c(rep("Normal",6), rep("PCOS",5))
+)
+
+fpkm_t <- t(fpkm)
+fpkm_pca <- PCA(fpkm_t, ncp = 3, scale.unit = TRUE, graph = FALSE)
+
+# extract the coordinates of the samples in the first three axes of PCA
+pca <- data.frame(fpkm_pca$ind$coord[,1:3])
+
+# extract the contribution of the first three axes of PCA
+pca_eig1 <- round(fpkm_pca$eig[1,2], 2)
+pca_eig2 <- round(fpkm_pca$eig[2,2], 2)
+pca_eig3 <- round(fpkm_pca$eig[3,2], 2)
+
+pca$sample <- rownames(pca)
+group <- merge(group, pca)
+
+group$group <- factor(group$group, levels= c("Normal","PCOS"))
+
+my_color <- brewer.pal(2, "Set1")
+colors = my_color[as.numeric(group$group)]
+
+scatterplot3d(group[,2:4], color = "black",
+                     pch=21, bg=colors,
+              xlab = paste("PC1:", pca_eig1,"%"),
+              ylab = paste("PC2:", pca_eig2,"%"),
+              zlab = paste("PC3:", pca_eig3,"%"))
+legend("top", col="black",legend = levels(group$group),
+       pt.bg = my_color, pch=21, inset=-0.3, xpd = TRUE)
+
+# save
+pdf("../results/00_qc/QC_pca.pdf")
+scatterplot3d(group[,2:4], color = "black",
+                     pch=21, bg=colors,
+              xlab = paste("PC1:", pca_eig1,"%"),
+              ylab = paste("PC2:", pca_eig2,"%"),
+              zlab = paste("PC3:", pca_eig3,"%"))
+legend("top", col="black",legend = levels(group$group),
+       pt.bg = my_color, pch=21, inset=-0.3, xpd = TRUE)
+dev.off()
+
+```
+
+# DEG
+
+```{r}
+rm(list = ls())
+
+library(DESeq2)
+
+load("../data/R/count.Rdata")
+
+DESeq.DEG <- function(countData, colData,logFC_cutoff){
+  require(DESeq2)
+  dds <- DESeqDataSetFromMatrix(countData = countData,
+                                colData = colData,
+                                design = ~ condition)
+  # normalized
+  dds <- DESeq(dds)
+    
+  # contrast with each other and extract results
+  group <- colData$condition
+  res <- results(dds, contrast = c("condition", rev(levels(group))))
+  resOrdered <- res[order(res$pvalue),]
+  outName <- as.data.frame(resOrdered)  
+  outName <- na.omit(outName)
+    
+  k1 <- (outName$padj < 0.05)&(outName$log2FoldChange < -logFC_cutoff)
+  k2 <- (outName$padj < 0.05)&(outName$log2FoldChange > logFC_cutoff)
+    
+  outName$change <- ifelse(k1, "DOWN",ifelse(k2, "UP","NOT"))  
+    
+  return(outName)
+    
+}
+
+info <- read_tsv("../data/processed/GSE138518.info.txt", col_names = T) %>% 
+  mutate(group = case_when(source_name == "Normal" ~ "Normal",
+                           source_name == "Polycystic ovary syndrome" ~ "PCOS"))
+
+rownames(fcount) <- fcount$Geneid
+count <- fcount[,9:ncol(fcount)]
+
+colData <- data.frame(row.names = factor(info$Run),
+                      condition = factor(info$source_name))
+
+deg <- DESeq.DEG(countData = count, colData = colData, logFC_cutoff = 2)
+table(deg$change)
+
+deg$Geneid <- rownames(deg)
+deg <- merge(deg, genelist, all.x=TRUE)
+
+save(deg, file = "../data/R/DEG.Rdata")
+
+```
+
+## GO enrichment of all genes
+
+```{r}
+rm(list = ls())
+load("../data/R/DEG.Rdata")
+
+onlydeg <- deg[deg$change!="NOT",]
+deglist <- bitr(deg$Geneid,fromType = 'ENSEMBL',
+  toType = c('ENTREZID','SYMBOL','GENETYPE'),
+  OrgDb='org.Hs.eg.db')
+
+ego2 <- enrichGO(gene = deglist$ENTREZID,
+                OrgDb = org.Hs.eg.db,
+                ont = "ALL",
+                pAdjustMethod = "BH",
+                readable = TRUE)
+ego.res <- ego2@result
+
+save(ego.res, file = "../data/R/GO.Rdata")
+load("../data/R/GO.Rdata")
+
+library(aPEAR)
+enrichmentNetwork(ego.res, colorBy='pvalue',
+                  colorType=c("pval"),
+                  nodeSize = "Count",
+                  fontSize=4,
+                  drawEllipses=TRUE,
+                  pCutoff=-10,
+                  verbose = TRUE) ## too many
+
+library(simplifyEnrichment)
+
+mat <- GO_similarity(ego.res[ego.res$ONTOLOGY=="BP","ID"],ont = "BP")
+
+pdf("../results/01_DEG/simpGO_BP.pdf", width = 8, height = 5)
+simplifyGO(mat, plot = T)
+dev.off()
+
+```
+
+## GO enrichment of DEGs
+
+```{r}
+rm(list = ls())
+load("../data/R/DEG.Rdata")
+
+onlydeg <- deg[deg$change!="NOT",]
+deglist <- bitr(onlydeg$Geneid,fromType = 'ENSEMBL',
+  toType = c('ENTREZID','SYMBOL','GENETYPE'),
+  OrgDb='org.Hs.eg.db')
+
+ego2 <- enrichGO(gene = deglist$ENTREZID,
+                OrgDb = org.Hs.eg.db,
+                ont = "ALL",
+                pAdjustMethod = "BH",
+                readable = TRUE)
+ego.res <- ego2@result
+
+save(ego.res, file = "../data/R/GO.Rdata")
+load("../data/R/GO.Rdata")
+
+library(aPEAR)
+enrichmentNetwork(ego.res, colorBy='pvalue',
+                  colorType=c("pval"),
+                  nodeSize = "Count",
+                  fontSize=4,
+                  drawEllipses=TRUE,
+                  pCutoff=-10,
+                  verbose = TRUE) ## too many
+
+library(simplifyEnrichment)
+
+mat <- GO_similarity(ego.res[ego.res$ONTOLOGY=="BP","ID"],ont = "BP")
+
+pdf("../results/01_DEG/simpGO_BP2.pdf", width = 8, height = 5)
+simplifyGO(mat, plot = T)
+dev.off()
+
+```
+
+## volcano and plot of DEG
+
+```{r}
+rm(list = ls())
+
+load("../data/R/DEG.Rdata")
+
+library(ggpubr)
+
+deg$logP <- -log10(deg$padj)
+deg <- deg[order(deg$padj),]
+
+up_label <- deg[deg$change=="UP",]
+down_label <- deg[deg$change=="DOWN",]
+
+deg_label_gene <- data.frame(gene=c(up_label$Geneid, down_label$Geneid),
+                             label=c(up_label$change, down_label$change))
+
+deg$gene <- deg$Geneid
+
+deg <- merge(deg, deg_label_gene, by="gene", all=T)
+deg <- deg[order(deg$padj),]
+
+pdf("../results/01_DEG/volcano_DEG.pdf")
+ggscatter(deg, x="log2FoldChange", y="logP", ylab="-log10padj",
+          color = "change",
+          palette = c("#357EBD99","grey","#D43F3A99"),
+          repel = T,
+          size = 2,
+          # label = "external_gene_name",
+          # label.select = deg$external_gene_name[1:30]
+          ) + # add the label will be wrong
+  geom_hline(yintercept = -log10(0.05), linetype="dashed") +
+  geom_vline(xintercept = c(-2,2), linetype="dashed") +
+  theme_bw() +
+  #ylab("-log10padj") +
+  theme(panel.grid = element_blank(),
+        axis.text = element_text(colour="black", size=rel(1.5)),
+        axis.title = element_text(colour="black", size = rel(2)),
+        legend.text = element_text(color = "black", size = rel(2)),
+        legend.title = element_blank()) +
+  coord_fixed(ratio=1.2) 
+dev.off()
+
+## volcano: draw with ggplot
+library(ggrepel)
+# 
+# deg$label <- ifelse(deg$padj<0.05 & abs(deg$log2FoldChange)>=5,
+#                     as.character(deg$external_gene_name),"")
+
+
+# label <- c("YAP1","HBB")
+# deg$label <- ifelse(deg$external_gene_name%in%label,
+#                     as.character(deg$external_gene_name),"")
+
+sig_genes <- deg %>% filter(external_gene_name %in% c("YAP1", "HBB","KISS1R",
+                                                      "HOOK3","NLRP13","H19"))
+sig_genes$label <- sig_genes$external_gene_name
+
+
+pdf("../results/01_DEG/volcano_DEG_label.pdf")
+ggplot(deg, aes(log2FoldChange, logP, colour = change)) +
+  geom_point(alpha=0.6, size=2) +
+  geom_point(data = sig_genes, shape = 21, size = 2, colour = "black") +
+  scale_color_manual(values = c("#357EBD","grey","#D43F3A")) +
+  geom_hline(yintercept = -log10(0.05), linetype="dashed") +
+  geom_vline(xintercept = c(-2,2), linetype="dashed") +
+  theme_bw() +
+  ylab("-log10padj") +
+  theme(panel.grid = element_blank(),
+        axis.text = element_text(colour="black", size=rel(1.5)),
+        axis.title = element_text(colour="black", size = rel(2)),
+        legend.text = element_text(color = "black", size = rel(2)),
+        legend.title = element_blank()) +
+  coord_fixed(ratio=1.2) +
+  geom_label_repel(data = sig_genes, aes(label = label),
+                   size = 4, force=2,
+                   nudge_y = 1) 
+dev.off()
+
+# statistic of biotype: protein-coding or non-coding
+onlydeg <- deg[deg$change!="NOT",]
+table(onlydeg$gene_biotype)
+
+onlydeg$biotype <- ifelse(onlydeg$gene_biotype=="protein_coding", "protein-coding","non-coding")
+onlydeg$count <- as.numeric(1)
+
+sta.type <- aggregate(count ~ change + biotype, onlydeg, sum)
+sta.type$count <- ifelse(sta.type$change=="DOWN",  -sta.type$count, sta.type$count)
+sta.type$biotype <- c("down-noncoding","up-noncoding","down-coding","up-coding")
+
+sta.type$biotype <- factor(sta.type$biotype,
+                           levels = c("down-noncoding","down-coding","up-coding","up-noncoding"))
+
+pdf("../results/01_DEG/bar_DEG.pdf")
+ggplot(sta.type, aes(x="PCOS vs. Normal", y=count, fill=biotype)) +
+  geom_bar(stat = "identity", width = .6) +
+  theme_bw() + ggtitle("PCOS vs. Normal") +
+  scale_y_continuous(breaks = c(-500,-250,0,250),labels = c(500,250,0,250)) +
+  theme(axis.text = element_text(color="black", size = rel(2)),
+        axis.text.x = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        #panel.grid = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.border = element_blank(),
+        plot.title = element_text(hjust=0.5, size = rel(2.5),vjust = 2),
+        legend.background = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(color = "black", size = rel(1.5)),
+        plot.margin = unit(rep(1,4),"cm")) +
+  scale_fill_manual(values = c("#46B8DA","#357EBD","#D43F3A","salmon")) +
+  coord_fixed(ratio = 1/350) +
+  geom_hline(yintercept = 0) +
+  annotate("text", x=1, y=450, label="401", size=rel(8)) +
+  annotate("text", x=1, y=-520, label="491", size=rel(8)) 
+dev.off()
+```
+
+# rMATS: filter significant DASEs
+
+DASEs means Differential alternative splicing events. Significant criterias:
+
+$$|\Delta{IncLevelDifference}| > 0.1\ and\ FDR < 0.05$$
+
+```{r}
+rm(list = ls())
+
+res <- list.files("../results/pcos_rmats_out/",pattern = ".MATS.JC.txt")
+
+dase <- data.frame()
+for(i in res){
+  tmp <- read.table(paste0("../results/pcos_rmats_out/",i), sep = "\t", header = T)
+  
+  tmp.filt <- filter(tmp, (FDR<0.05 & IncLevelDifference>0.1) | (FDR<0.05 & IncLevelDifference<(-0.1)))
+  
+  tmp.filt$type <- i
+  
+  dase <- rbind(dase, tmp.filt[,c("ID","GeneID","geneSymbol","PValue","FDR","IncLevel1","IncLevel2","IncLevelDifference","type")])
+}
+
+dase$type <- gsub(".MATS.JC.txt","",dase$type)
+
+table(dase$type)
+
+writexl::write_xlsx(dase, path = "../results/02_rmats_describe/rmats.filter.xlsx")
+save(dase, file = "../results/02_rmats_describe/rmats.filter.Rdata")
+```
+
+## Plot1: statistic of DASEs distribution from rMATS
+
+```{r}
+
+sta.dase <- data.frame(type = c("SE","RI","MXE","A3SS","A5SS"),
+                       count = c(615, 197, 246, 111, 81))
+
+pdf("../results/02_rmats_describe/bar_DASE_amount.pdf")
+ggplot(sta.dase, aes(x=type, y=count)) +
+  geom_bar(stat = "identity", fill="lightskyblue", width = .8) +
+  theme_bw() + ggtitle("Differential AS events amount") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,650)) +
+  theme(axis.text = element_text(color="black", size = rel(1.5),vjust = 2),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust=0.5, size = rel(2)),
+        plot.margin = unit(rep(1,4),"cm")) +
+  coord_fixed(ratio = 1/100) 
+dev.off()
+
+sta.dase$per <- sta.dase$count/sum(sta.dase$count) * 100
+
+pdf("../results/02_rmats_describe/bar_DASE_percent.pdf")
+ggplot(sta.dase, aes(x="PCOS vs. Normal", y=per, fill=type)) +
+  geom_bar(stat = "identity", width = .5) +
+  theme_bw() + ggtitle("Differential AS events statistic") +
+  ylab("Percentage (%)") +
+  scale_y_continuous(expand = c(0,0)) +
+  theme(axis.text = element_text(color="black", size = rel(1.5)),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(color = "black", size = rel(2)),
+        panel.grid = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust=0.5, size = rel(2),vjust = 2),
+        legend.background = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(color = "black", size = rel(1.5)),
+        plot.margin = unit(rep(1,4),"cm")) +
+  coord_fixed(ratio = 1/50) +
+  scale_fill_frontiers()
+dev.off()
+
+# Pie plot
+require(ggforce)
+pie(sta.dase$per, labels = sta.dase$type)
+
+pdf("../results/02_rmats_describe/pie_DASE_percent.pdf")
+ggplot() + 
+  theme(panel.grid = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        legend.title = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  xlab("") + ylab("") + coord_fixed(ratio=1) +
+  geom_arc_bar(data = sta.dase, 
+               stat = "pie",
+               aes(x0=0,y0=0,r0=0,r=2,
+                   amount=per, fill=type)) +
+  scale_fill_locuszoom(alpha = 0.6) 
+dev.off()
+```
+
+## Compare DASEGs
+
+```{r}
+rm(list = ls())
+library(UpSetR)
+library(scales)
+
+load("../results/02_rmats_describe/rmats.filter.Rdata")
+
+dase$count <- as.numeric(1)
+
+sta.daseg <- aggregate(count ~ geneSymbol, dase, sum) %>% 
+  arrange(desc(count))
+
+asList <- list(SE = unique(dase[dase$type=="SE","geneSymbol"]),
+               RI = unique(dase[dase$type=="RI","geneSymbol"]),
+               MXE = unique(dase[dase$type=="MXE","geneSymbol"]),
+               A5SS = unique(dase[dase$type=="A5SS","geneSymbol"]),
+               A3SS = unique(dase[dase$type=="A3SS","geneSymbol"]))
+
+upsetData <- fromList(asList)
+# show_col(pal_locuszoom("default", alpha = 0.6)(5))
+
+pdf("../results/02_rmats_describe/upsetR_DASE_amount.pdf")
+upset(upsetData, nsets = 5,
+      keep.order = TRUE,
+      point.size = 2,
+      order.by = "freq",
+      mb.ratio = c(.6,.4),
+      text.scale = 2,
+      sets.bar.color= c("#357EBD99","#5CB85C99","#46B8DA99","#D43F3A99","#EEA23699"),
+      queries = list(
+        list(query=intersects, params=list("SE"), color="red",active=F),
+        list(query=intersects, params=list("SE","A3SS","A5SS","RI"), color="dodgerblue4", active=T),
+        list(query=intersects, params=list("SE","A3SS","RI","MXE"), color="dodgerblue4", active=T)))
+dev.off()
+
+
+# Top DASEG
+filt.daseg <- filter(sta.daseg, count>3)
+
+filt.daseg$geneSymbol <- factor(filt.daseg$geneSymbol, 
+                                levels = rev(filt.daseg$geneSymbol))
+
+load("../data/R/count.Rdata")
+colnames(genelist)[2] <- "geneSymbol"
+
+filt.daseg <- merge(filt.daseg, genelist[,c("geneSymbol","gene_biotype")], all.x=TRUE)
+
+pdf("../results/02_rmats_describe/bar_DASEG_top.pdf")
+ggplot(filt.daseg, aes(y=geneSymbol, x=count, fill=gene_biotype)) +
+  geom_bar(stat = "identity") +
+  scale_x_continuous(expand = c(0,0), limits = c(0,10)) + theme_bw() +
+  scale_fill_manual(values = c("#5CB85C","lightskyblue","#EEA236")) +
+  theme(axis.title.y = element_blank(),
+        axis.text = element_text(color="black", size = rel(1.2)),
+        axis.text.x = element_blank(),
+        axis.title.x = element_text(color="black", size = rel(1.5)),
+        legend.text = element_text(color="black"),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_line(),
+        legend.title = element_text(size = rel(1.3)),
+        axis.line.x = element_line(color = "black")) +
+  geom_text(aes(label=count), size=rel(6), vjust=0.5, hjust=1.2, color="black") +
+  xlab("AS events amount") +
+  coord_fixed(ratio = 1.8)
+dev.off()
+```
+
+## Relationship between DEG and DASEG
+
+```{r}
+rm(list = ls())
+
+load("../data/R/DEG.Rdata")
+load("../results/02_rmats_describe/rmats.filter.Rdata")
+
+onlydeg <- deg[deg$change!="NOT",]
+onlydeg.list <- unique(onlydeg$external_gene_name)
+
+dase.list <- unique(dase$geneSymbol)
+
+library(ggvenn)
+
+list <- list("DEG" = onlydeg.list,
+             "DASEG" = dase.list)
+
+intersect(onlydeg.list, dase.list)
+
+pdf("../results/02_rmats_describe/venn_DEG_DASEG.pdf")
+ggvenn(list, 
+       show_elements = FALSE,
+       fill_color = c("#357EBD99","#D43F3A99"),
+       label_sep = "\n", stroke_size = 1.5,set_name_size = 5,
+       text_size = 9)
+dev.off()
+
+
+```
+
+## GO enrichment of DASEG
+
+```{r}
+rm(list = ls())
+
+library(ClusterGVis)
+library(xlsx)
+
+load("../data/R/DEG.Rdata")
+load("../data/R/fpkm.Rdata")
+load("../results/02_rmats_describe/rmats.filter.Rdata")
+
+dase$GeneID <- unlist(strsplit(dase$GeneID, "[.]"))[seq(1,2*nrow(dase),2)]
+dase.fpkm <- fpkm[fpkm$Geneid %in% dase$GeneID,] %>% na.omit()
+dase.fpkm2 <- dase.fpkm[!duplicated(dase.fpkm$external_gene_name),]
+
+rownames(dase.fpkm2) <- dase.fpkm2$external_gene_name
+dase.fpkm2 <- dase.fpkm2[,-c(1,13:14)]
+
+# mfuzz
+set.seed(2024)
+getClusters(exp = dase.fpkm2) # check the optional cluster numbers
+
+dase.kmeans <- clusterData(exp = dase.fpkm2,cluster.method = "kmeans",
+                          cluster.num = 5)
+
+# plot line only
+visCluster(object = dase.kmeans)
+
+# plot heatmap only
+visCluster(object = dase.kmeans,
+           plot.type = "heatmap")
+
+write.xlsx(dase.kmeans$long.res, "../results/02_rmats_describe/kmeans_dase.xlsx",
+           row.names = F, col.names = T)
+
+# enrichment analysis
+dase.enrich <- enrichCluster(object = dase.kmeans,
+                             OrgDb = "org.Hs.eg.db",
+                             type = "BP",
+                             pvalueCutoff = 0.05,
+                             topn = 5,
+                             seed = 2024)
+dase.enrich2 <- enrichCluster(object = dase.kmeans,
+                             OrgDb = "org.Hs.eg.db",
+                             type = "BP",
+                             pvalueCutoff = 0.05,
+                             topn = NULL,
+                             seed = 2024)
+
+write.xlsx(dase.enrich2, file = "../results/02_rmats_describe/clustergvis_dase.enrich.xlsx")
+write.xlsx(dase.enrich, file = "../results/02_rmats_describe/clustergvis_dase.enrichFilt.xlsx")
+
+markGenes <- c("IL33","USP25","SIRT2","YAP1","TAF1","TGFB1I1","SNRPN","BMAL1",
+               "GSK3B")
+
+
+pdf("../results/02_rmats_describe/clustergvis_dase.pdf", height = 10, width = 12, onefile = F)
+visCluster(object = dase.kmeans,
+           plot.type = "both",
+           show_row_dend = F,
+           cluster_columns = FALSE,
+           markGenes = markGenes,
+           markGenes.side = "left",
+           annoTerm.data = dase.enrich,
+           go.col = rep(ggsci::pal_d3()(3),each = 5),
+           line.side = "none",
+           sample.group = c(rep("Normal",6),rep("PCOS",5)),
+           genes.gp = c('italic',fontsize = 12,col = "black"),
+           border = FALSE,
+           ctAnno.col = ggsci::pal_d3()(5),
+           sample.col = c(rep("#2E8B57",6),rep("#DC143C",5)))
+           
+dev.off()
+
+```
+
+## rMAPS2 analysis
+
+```{r}
+rm(list = ls())
+
+dn <- read.table("../results/pcos_rmats_out/rMAPS2/resultMaps/pVal.dn.vs.bg.RNAmap.txt",
+                 sep = "\t", header = T)
+up <- read.table("../results/pcos_rmats_out/rMAPS2/resultMaps/pVal.up.vs.bg.RNAmap.txt",
+                 sep = "\t", header = T)
+
+dn$protein <- unlist(strsplit(dn$RBP, "[.]"))[seq(1,2*nrow(dn),2)]
+dn$motif <- unlist(strsplit(dn$RBP, "[.]"))[seq(2,2*nrow(dn),2)]
+dn$group <- "dn"
+
+up$protein <- unlist(strsplit(up$RBP, "[.]"))[seq(1,2*nrow(up),2)]
+up$motif <- unlist(strsplit(up$RBP, "[.]"))[seq(2,2*nrow(up),2)]
+up$group <- "up"
+
+rmaps <- rbind(dn,up)
+
+rmaps$symbol <- rmaps$protein
+
+rmaps$symbol <- gsub("HuR","ELAVL1",rmaps$symbol)
+rmaps$symbol <- gsub("SRp20","SRSF3",rmaps$symbol)
+rmaps$symbol <- gsub("SRp40","SRSF5",rmaps$symbol)
+rmaps$symbol <- gsub("Tra2-beta","TRA2B",rmaps$symbol)
+rmaps$symbol <- gsub("SF2-ASF","SRSF1",rmaps$symbol)
+
+rbp <- unique(rmaps$symbol)
+
+load("../data/R/DEG.Rdata")
+onlydeg <- filter(deg, change != "NOT")
+
+table(rbp %in% onlydeg$external_gene_name)
+
+
+# 
+rmaps$count <- as.numeric(1)
+
+rmaps2 <- aggregate(count ~ symbol, rmaps, sum) %>% 
+  arrange(desc(count))
+
+load("../results/02_rmats_describe/rmats.filter.Rdata")
+
+```
+
+# IsoformSwitchAnalysis: predict alternative splicing
+
+```{r}
+rm(list = ls())
+
+files <- list.files("../results/rsem_GRCh37_out/", pattern = ".isoforms.results", 
+                    full.names = T)
+
+# load rsem isoform quantification files
+library(IsoformSwitchAnalyzeR, quietly = TRUE)
+library(tximport)
+
+rsem <- tximport(files, type="rsem", txIn=TRUE, txOut = TRUE, 
+                 countsFromAbundance = "scaledTPM")
+
+head(rsem$abundance,2)
+head(rsem$counts,2)
+
+info <- read_tsv("../data/processed/GSE138518.info.txt") %>% 
+  mutate(across('source_name', str_replace, 'Polycystic ovary syndrome','PCOS')) 
+
+colnames(rsem$abundance) <- c(gsub("../results/rsem_GRCh37_out/","",files))
+colnames(rsem$abundance) <- c(gsub(".isoforms.results","",colnames(rsem$abundance)))
+
+colnames(rsem$counts) <- c(gsub("../results/rsem_GRCh37_out/","",files))
+colnames(rsem$counts) <- c(gsub(".isoforms.results","",colnames(rsem$counts)))
+
+# make design matrix
+design <- data.frame(
+  sampleID = colnames(rsem$abundance),
+  condition = info[info$Run %in% colnames(rsem$abundance),"source_name"]
+)
+colnames(design)[2] <- "condition"
+
+# design <- design[c(7:11,1:6),]
+
+# create switchAnalyzeRlist
+switchList <- importRdata(
+  isoformCountMatrix = rsem$counts,
+  isoformRepExpression = rsem$abundance,
+  designMatrix = design,
+  #ignoreAfterPeriod = TRUE,
+  isoformExonAnnoation = "../data/annotation/gencode.v40lift37.annotation.gtf",
+  isoformNtFasta = "../data/fasta/gencode.v40lift37.transcripts.fa",
+  showProgress = FALSE
+)
+
+# filter
+switchList <- preFilter(switchList, 
+                        geneExpressionCutoff = 1, 
+                        isoformExpressionCutoff = 0)
+
+# Annotate Q-value, calculate the Q-value and dIF of Switches, determine the significance and effect size of isoform
+# The alpha argument indicating the FDR corrected P-value (Q-value) cutoff
+# The dIFcutoff argument indicating the minimum (absolute) change in isoform usage
+switchListAnalyzed <- isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = switchList,
+  alpha = 0.05,
+  reduceToSwitchingGenes = TRUE
+)
+## The result add two columns: isoform_switch_q_value and gene_switch_q_value
+
+# ORF analysis
+switchListO <- analyzeORF(switchListAnalyzed)
+
+siwtchListS <- extractSequence(switchListO,
+                               pathToOutput = "../results/03_isoform/ORF_sequence")
+## the output files of this part will be the input file of CPAT, Pfam, and SignalP
+## These results could be merged into the SwitchAnalyzeR Object
+
+save(siwtchListS, file = "../data/R/switchListS.Rdata")
+```
+
+## Add annotations
+
+```{r}
+rm(list = ls())
+load("../data/R/switchListS.Rdata")
+extractSwitchSummary(siwtchListS)
+
+# CPAT analysis
+## conda activate cpat
+## cd /mnt/g/PCOS-miao/results/03_isoform/ORF_sequence/
+## cpat.py -g ./isoformSwitchAnalyzeR_isoform_nt.fasta \
+## -d /mnt/g/PCOS-miao/program/CPAT-1.2.1/dat/Human_train.RData \
+## -x /mnt/g/PCOS-miao/program/CPAT-1.2.1/dat/Human_Hexamer.tab \
+## -o ./CPAT.txt
+switchListC <- analyzeCPAT(siwtchListS,
+                           pathToCPATresultFile = "../results/03_isoform/ORF_sequence/CPAT.txt",
+                           codingCutoff = 0.364, removeNoncodinORFs = TRUE)
+
+# PFAM domain analysis
+## pfam_scan.pl -fasta isoformSwitchAnalyzeR_isoform_AA_merge.fasta \
+## -dir /mnt/g/PCOS-miao/program/PfamScan/PfamData/ \
+## -outfile ./pfam.txt 
+switchListP <- analyzePFAM(switchListC,
+                           pathToPFAMresultFile = "../results/03_isoform/ORF_sequence/pfam.txt")
+
+# SignalP analysis
+## signalp6 --fastafile isoformSwitchAnalyzeR_isoform_AA.fasta \
+## --organism euk \
+## --output_dir ./signalp/ \
+## --format txt --mode fast
+
+## cd /mnt/g/PCOS-miao/results/03_isoform/ORF_sequence/signalp/
+## awk -F "\t" '{OFS="\t"}{print $1,$2,$4,$3,$NF}' prediction_results.txt > prediction_results_summary.txt
+switchListSigP <- analyzeSignalP(switchListP,
+                                 pathToSignalPresultFile = "../results/03_isoform/ORF_sequence/signalp/prediction_results_summary.txt")
+
+```
+
+## Predict alternative splicing
+
+```{r}
+switchListAnalyzed <- analyzeAlternativeSplicing(
+  switchAnalyzeRlist = switchListSigP, quiet = TRUE)
+
+switchListCQ <- analyzeSwitchConsequences(
+  switchListAnalyzed,
+  consequencesToAnalyze = c("intron_retention","coding_potential",
+                            "ORF_seq_similarity","NMD_status",
+                            "domains_identified","signal_peptide_identified")
+)
+
+save(switchListCQ, file = "../data/R/isoformswitch.Rdata")
+
+```
+
+## Statistic PLOT of IsoformSwitchAnalyzeR results
+
+```{r}
+rm(list = ls())
+load("../data/R/isoformswitch.Rdata")
+
+# Consequence summary
+pdf(file='../results/03_isoform/consequence_summary.pdf',width=12,height=5)
+extractConsequenceSummary(
+  switchListCQ,
+  consequencesToAnalyze='all',
+  plotGenes = FALSE,           # enables analysis of genes (instead of isoforms)
+  asFractionTotal = FALSE      # enables analysis of fraction of significant features
+) + 
+  theme(axis.text = element_text(color="black", size=rel(1.3)),
+        axis.title = element_text(color="black", size=rel(1.5)),
+        legend.text = element_text(color="black", size=rel(1.3)),
+        legend.title = element_text(color="black", size=rel(1.3)),
+        strip.text = element_text(color="black", size = rel(1.4)))
+dev.off()
+
+# Consequence enrichment
+pdf(file='../results/03_isoform/consequence_enrichment.pdf',width=12,height=6)
+extractConsequenceEnrichment(
+  switchListCQ,
+  consequencesToAnalyze='all',
+  analysisOppositeConsequence = TRUE,
+  returnResult = FALSE # if TRUE returns a data.frame with the results
+) + 
+  theme(axis.text = element_text(color="black", size=rel(1.3)),
+        axis.title = element_text(color="black", size=rel(1.5)),
+        legend.text = element_text(color="black", size=rel(1.3)),
+        legend.title = element_text(color="black", size=rel(1.3)),
+        strip.text = element_text(color="black", size = rel(1.5)))
+dev.off()
+
+# Overview plot of q.value versus dIF
+pdf(file='../results/03_isoform/overview1.pdf',width=6,height=6)
+ggplot(data = switchListCQ$isoformFeatures, aes(x=dIF, y=-log10(isoform_switch_q_value))) +
+  geom_point(
+    aes( color=abs(dIF) > 0.1 & isoform_switch_q_value < 0.05 ), # default cutoff
+    size=1) +
+  geom_hline(yintercept = -log10(0.05), linetype='dashed') + # default cutoff
+  geom_vline(xintercept = c(-0.1, 0.1), linetype='dashed') + # default cutoff
+  facet_wrap( ~ condition_1) + 
+  #facet_grid(condition_1 ~ condition_2) + # alternative to facet_wrap if you have overlapping conditions
+  scale_color_manual('Signficant\nIsoform Switch', values = c('black','red')) +
+  labs(x='dIF', y='-Log10 ( Isoform Switch Q Value )') +
+  theme_bw()
+dev.off()
+
+# Overview plot of dIF versus gene fc
+pdf(file='../results/03_isoform/overview2.pdf',width=6,height=6)
+ggplot(data = switchListCQ$isoformFeatures, aes(x=gene_log2_fold_change, y=dIF)) +
+  geom_point(
+    aes( color=abs(dIF) > 0.1 & isoform_switch_q_value < 0.05 ), # default cutoff
+    size=1) + 
+  facet_wrap(~ condition_1) +
+  #facet_grid(condition_1 ~ condition_2) + # alternative to facet_wrap if you have overlapping conditions
+  geom_hline(yintercept = 0, linetype='dashed') +
+  geom_vline(xintercept = 0, linetype='dashed') +
+  scale_color_manual('Signficant\nIsoform Switch', values = c('black','red')) +
+  labs(x='Gene log2 fold change', y='dIF') +
+  theme_bw()
+dev.off()
+
+# Splicing enrichment
+pdf(file='../results/03_isoform/splicing_enrichment.pdf',width=12,height=6)
+extractSplicingEnrichment(
+  switchListCQ,
+  returnResult = FALSE # if TRUE returns a data.frame with the results
+) + 
+  theme(axis.text = element_text(color="black", size=rel(1.3)),
+        axis.title = element_text(color="black", size=rel(1.5)),
+        legend.text = element_text(color="black", size=rel(1.3)),
+        legend.title = element_text(color="black", size=rel(1.5)),
+        strip.text = element_text(color="black", size = rel(1.5)))
+dev.off()
+
+# Splicing summary
+pdf(file='../results/03_isoform/splicing_summary.pdf',width=12,height=5)
+extractSplicingSummary(
+  switchListCQ,
+  returnResult = FALSE, # if TRUE returns a data.frame with the results
+  plotGenes = FALSE) + 
+  theme(axis.text = element_text(color="black", size=rel(1.3)),
+        axis.title = element_text(color="black", size=rel(1.5)),
+        legend.text = element_text(color="black", size=rel(1.3)),
+        legend.title = element_text(color="black", size=rel(1.5)),
+        strip.text = element_text(color="black", size = rel(1.5))) 
+dev.off()
+```
+
+```{r}
+iso.as <- switchListCQ$AlternativeSplicingAnalysis
+iso.is <- switchListCQ$isoformSwitchAnalysis
+iso.sc <- switchListCQ$switchConsequence
+
+extractTopSwitches(switchListCQ,
+                   filterForConsequences = TRUE,
+                   n = 10,
+                   sortByQvals = TRUE)
+
+extractTopSwitches(switchListCQ,
+                   filterForConsequences = TRUE,
+                   n = 10,
+                   sortByQvals = FALSE)
+
+
+switchPlot(switchListCQ, gene = 'TCF25')
+
+splice.enrich <- extractSplicingEnrichment(switchListCQ, returnResult = TRUE)
+
+# get gene rank
+gene_rank = extractTopSwitches( 
+  switchListCQ, 
+  filterForConsequences = TRUE, 
+  n = NA,                
+  extractGenes = TRUE,    # when FALSE isoforms are returned
+  sortByQvals = TRUE
+)
+
+ifMatrix <- extractGeneExpression(switchListCQ)
+
+```
+
+## Compare ATSS, ATTS and AS
+
+The difference between the isoforms involved in an isoform switch can arise by changes in three distinct biological mechanisms:
+
+1.  Alternative Transcription Start Site (aTSS)
+2.  Alternative Splicing (AS)
+3.  Alternative Transcription Termination Site (aTTS)
+
+Since we how the structure of the isoforms involved in a isoform switch we can also analyze which (combination) of these biological mechanisms gives rise to the difference between the two isoforms involved in an isoform switch.
+
+This is simply done by, in addition to running analyzeSwitchConsequences with the consequences you find interesting, making a separate consequence analysis of consequences (also with analyzeSwitchConsequences) where the consequences you analyze (supplied to the consequencesToAnalyze argument) are:
+
+-   ‘tss’ — which will analyze the isoforms for aTSS
+-   ‘intron_structure’ — which will analyze the isoforms for AS
+-   ‘tts’ — which will analyze the isoforms for aTSS
+
+Then we can simply compare the result of this analysis to the isoform switches with consequences we already have identified to be of interest, and thereby **identify which biological mechanisms give rise to the isoform switches with consequence you are interested in**. One suggestion for such an analysis is illustrated here:
+
+```{r}
+# analyze the biological mechanisms
+bioMechanismeAnalysis <- analyzeSwitchConsequences(
+  switchListCQ,
+  consequencesToAnalyze = c('tss','tts','intron_structure'),
+  showProgress = FALSE
+)$switchConsequence # only the consequences are interesting here
+
+# subset to those with differences
+bioMechanismeAnalysis <- bioMechanismeAnalysis[which(bioMechanismeAnalysis$isoformsDifferent),]
+
+## extract the consequences of interest already stored in the switchAnalyzeRlist
+myConsequence <- switchListCQ$switchConsequence
+myConsequence <- myConsequence[which(myConsequence$isoformsDifferent),]
+myConsequence$isoPair <- paste(myConsequence$isoformUpregulated,
+                               myConsequence$isoformDownregulated) # id for specific iso comparison
+
+## Obtain the mechanisms of the isoform switches with consequences
+bioMechanismeAnalysis$isoPair <- paste(bioMechanismeAnalysis$isoformUpregulated,
+                                       bioMechanismeAnalysis$isoformDownregulated)
+
+bioMechanismeAnalysis <- bioMechanismeAnalysis[which(bioMechanismeAnalysis$isoPair %in% myConsequence$isoPair),]
+
+# the result is best summarized in a Venn diagram
+## Create list with the isoPair ids for each consequences
+AS <- bioMechanismeAnalysis %>% filter(featureCompared=="intron_structure") %>% 
+  select(isoPair) %>% unlist()
+aTSS <- bioMechanismeAnalysis %>% filter(featureCompared=="tss") %>% 
+  select(isoPair) %>% unlist()
+aTTS <- bioMechanismeAnalysis %>% filter(featureCompared=="tts") %>% 
+  select(isoPair) %>% unlist()
+
+mechList <- list(
+  AS=AS,
+  aTSS = aTSS,
+  aTTS = aTTS
+)
+
+library(ggvenn)
+pdf("../results/03_isoform/venn_bioconsequence.pdf")
+ggvenn(mechList, 
+       show_elements = FALSE,
+       fill_color = c("#357EBD99","#D43F3A99","#DAA52099"),
+       label_sep = "\n", stroke_size = 1.5,set_name_size = 10,
+       text_size = 8,
+       show_percentage = FALSE,
+       auto_scale = FALSE) +
+  theme(plot.margin = unit(rep(1,4),"cm"))
+dev.off()
+
+table(bioMechanismeAnalysis$featureCompared)
+```
+
+## GO enrichment of DASG
+
+```{r}
+dasg.isoform <- unique(bioMechanismeAnalysis$gene_name)
+
+load("../data/R/fpkm.Rdata")
+
+dase.fpkm <- fpkm[fpkm$external_gene_name %in% dasg.isoform ,] %>% na.omit()
+dase.fpkm2 <- dase.fpkm[!duplicated(dase.fpkm$external_gene_name),]
+
+rownames(dase.fpkm2) <- dase.fpkm2$external_gene_name
+dase.fpkm2 <- dase.fpkm2[,-c(1,13:14)]
+
+# mfuzz
+set.seed(2024)
+getClusters(exp = dase.fpkm2) # check the optional cluster numbers
+
+dase.kmeans <- clusterData(exp = dase.fpkm2,cluster.method = "kmeans",
+                          cluster.num = 5)
+
+# plot line only
+visCluster(object = dase.kmeans)
+
+# plot heatmap only
+visCluster(object = dase.kmeans,
+           plot.type = "heatmap")
+
+write.xlsx(dase.kmeans$long.res, "../results/03_isoform/isoform_kmeans_dase.xlsx",
+           row.names = F, col.names = T)
+
+# enrichment analysis
+dase.enrich <- enrichCluster(object = dase.kmeans,
+                             OrgDb = "org.Hs.eg.db",
+                             type = "BP",
+                             pvalueCutoff = 0.05,
+                             topn = 5,
+                             seed = 2024)
+dase.enrich2 <- enrichCluster(object = dase.kmeans,
+                             OrgDb = "org.Hs.eg.db",
+                             type = "BP",
+                             pvalueCutoff = 0.05,
+                             topn = NULL,
+                             seed = 2024)
+
+write.xlsx(dase.enrich2, file = "../results/03_isoform/isoform_clustergvis_dase.enrich.xlsx")
+write.xlsx(dase.enrich, file = "../results/03_isoform/isoform_clustergvis_dase.enrichFilt.xlsx")
+
+markGenes <- c("IL33","USP25","SIRT2","YAP1","TAF1","TGFB1I1","SNRPN","BMAL1",
+               "GSK3B")
+
+
+pdf("../results/03_isoform/isoform_clustergvis_dase.pdf", height = 10, width = 12, onefile = F)
+visCluster(object = dase.kmeans,
+           plot.type = "both",
+           show_row_dend = F,
+           cluster_columns = FALSE,
+           # markGenes = markGenes,
+           # markGenes.side = "left",
+           annoTerm.data = dase.enrich,
+           go.col = rep(ggsci::pal_d3()(4),each = 5),
+           line.side = "none",
+           sample.group = c(rep("Normal",6),rep("PCOS",5)),
+           genes.gp = c('italic',fontsize = 12,col = "black"),
+           border = FALSE,
+           ctAnno.col = ggsci::pal_d3()(5),
+           add.sampleanno = TRUE,
+           sample.col = c(rep("#2E8B57",6),rep("#DC143C",5))
+           )
+dev.off()
+```
+
+# Compare DASEGs from rMATS and DASGs from isoformswitchanalyzeR
+
+```{r}
+rm(list = ls())
+
+load("../data/R/isoformswitch.Rdata")
+load("../results/02_rmats_describe/rmats.filter.Rdata")
+
+dasg.rmats <- unique(dase$geneSymbol)
+
+# analyze the biological mechanisms
+bioMechanismeAnalysis <- analyzeSwitchConsequences(
+  switchListCQ,
+  consequencesToAnalyze = c('tss','tts','intron_structure'),
+  showProgress = FALSE
+)$switchConsequence # only the consequences are interesting here
+
+# subset to those with differences
+bioMechanismeAnalysis <- bioMechanismeAnalysis[which(bioMechanismeAnalysis$isoformsDifferent),]
+
+## extract the consequences of interest already stored in the switchAnalyzeRlist
+myConsequence <- switchListCQ$switchConsequence
+myConsequence <- myConsequence[which(myConsequence$isoformsDifferent),]
+myConsequence$isoPair <- paste(myConsequence$isoformUpregulated,
+                               myConsequence$isoformDownregulated) # id for specific iso comparison
+
+## Obtain the mechanisms of the isoform switches with consequences
+bioMechanismeAnalysis$isoPair <- paste(bioMechanismeAnalysis$isoformUpregulated,
+                                       bioMechanismeAnalysis$isoformDownregulated)
+
+bioMechanismeAnalysis <- bioMechanismeAnalysis[which(bioMechanismeAnalysis$isoPair %in% myConsequence$isoPair),]
+
+
+dasg.isoform <- unique(bioMechanismeAnalysis$gene_name)
+
+inter <- intersect(dasg.rmats, dasg.isoform)
+
+compList <- list(
+  rMATS = dasg.rmats,
+  IsoformSwitchAnalyzeR = dasg.isoform
+)
+
+pdf("../results/03_isoform/venn_compare.pdf")
+ggvenn(compList, 
+       show_elements = FALSE,
+       fill_color = c("#357EBD99","#D43F3A99"),
+       label_sep = "\n", stroke_size = 1.5,set_name_size = 10,
+       text_size = 9,
+       show_percentage = TRUE, auto_scale = TRUE) +
+  theme(plot.margin = unit(rep(0,4),"cm"))
+dev.off()
+
+
+# compare expression level
+load("../data/R/fpkm.Rdata")
+
+inter.fpkm <- fpkm[fpkm$external_gene_name%in%inter,]
+
+inter.fpkm$mean <- rowMeans(inter.fpkm[,c(2:12)])
+inter.fpkm <- inter.fpkm %>% arrange(desc(mean))
+
+load("../data/R/DEG.Rdata")
+onlydeg <- deg[deg$change!="NOT",]
+
+intersect(onlydeg$external_gene_name,)
+
+
+pdf("../results/03_isoform/switchplot_YAP1.pdf")
+switchPlot(switchListCQ, gene = 'YAP1')
+dev.off()
+
+pdf("../results/03_isoform/switchplot_SNRPN.pdf")
+switchPlot(switchListCQ, gene = 'SNRPN')
+dev.off()
+
+switchPlot(switchListCQ, gene = 'FOSB')
+
+switchPlotTopSwitches(switchListCQ,
+                      n=Inf,
+                      pathToOutput = "../results/03_isoform/switchPlot/")
+
+```
+
+# GO enrichment of the intersection set
+
+```{r}
+interg <- intersect(dasg.isoform, dasg.rmats)
+library(xlsx)
+load("../data/R/fpkm.Rdata")
+
+dase.fpkm <- fpkm[fpkm$external_gene_name %in% interg,] %>% na.omit()
+dase.fpkm2 <- dase.fpkm[!duplicated(dase.fpkm$external_gene_name),]
+
+rownames(dase.fpkm2) <- dase.fpkm2$external_gene_name
+dase.fpkm2 <- dase.fpkm2[,-c(1,13:14)]
+
+# mfuzz
+set.seed(2024)
+getClusters(exp = dase.fpkm2) # check the optional cluster numbers
+
+dase.kmeans <- clusterData(exp = dase.fpkm2,cluster.method = "kmeans",
+                          cluster.num = 5)
+
+# plot line only
+visCluster(object = dase.kmeans)
+
+# plot heatmap only
+visCluster(object = dase.kmeans,
+           plot.type = "heatmap")
+
+write.xlsx(dase.kmeans$long.res, "../results/04_intersect/intersect_kmeans_dase.xlsx",
+           row.names = F, col.names = T)
+
+# enrichment analysis
+dase.enrich <- enrichCluster(object = dase.kmeans,
+                             OrgDb = "org.Hs.eg.db",
+                             type = "BP",
+                             pvalueCutoff = 0.05,
+                             topn = 5,
+                             seed = 2024)
+dase.enrich2 <- enrichCluster(object = dase.kmeans,
+                             OrgDb = "org.Hs.eg.db",
+                             type = "BP",
+                             pvalueCutoff = 0.05,
+                             topn = NULL,
+                             seed = 2024)
+
+write.xlsx(dase.enrich2, file = "../results/04_intersect/intersect_clustergvis_dase.enrich.xlsx")
+write.xlsx(dase.enrich, file = "../results/04_intersect/intersect_clustergvis_dase.enrichFilt.xlsx")
+
+markGenes <- c("IL33","USP25","SIRT2","YAP1","TAF1","TGFB1I1","SNRPN","BMAL1",
+               "GSK3B")
+
+
+pdf("../results/02_rmats_describe/clustergvis_dase.pdf", height = 10, width = 12, onefile = F)
+visCluster(object = dase.kmeans,
+           plot.type = "both",
+           show_row_dend = F,
+           cluster_columns = FALSE,
+           # markGenes = markGenes,
+           # markGenes.side = "left",
+           annoTerm.data = dase.enrich,
+           go.col = rep(ggsci::pal_d3()(2),each = 5),
+           line.side = "none",
+           sample.group = c(rep("Normal",6),rep("PCOS",5)),
+           genes.gp = c('italic',fontsize = 12,col = "black"),
+           border = FALSE,
+           ctAnno.col = ggsci::pal_d3()(5))
+dev.off()
+
+# # Mfuzz
+# ## filter low expression
+# dase.fpkm3 <- dase.fpkm2[apply(dase.fpkm2, 1, function(x) sum(x)>2),]
+# dase.fpkm.g <- data.matrix(dase.fpkm3)
+# dase.fpkm.g <- new('ExpressionSet', exprs=dase.fpkm.g)
+# library(Mfuzz)
+# dase.fpkm.g <- filter.NA(dase.fpkm.g, thres=0.25) # filter missing values
+# dase.fpkm.g <- filter.std(dase.fpkm.g,min.std=0)
+# 
+# dase.s <- standardise(dase.fpkm.g)
+# 
+# dase.mfuzz <- clusterData(exp = dase.fpkm2,cluster.method = "mfuzz",
+#                           cluster.num = 5)
+```
