@@ -119,7 +119,9 @@ save(fpkm, file = "../data/R/fpkm.Rdata")
 
 # Quality control of samples
 
-## STAR mapping efficiency
+## Fig S1A: STAR mapping efficiency
+
+
 
 ```{r}
 rm(list = ls())
@@ -206,7 +208,7 @@ dev.off()
 
 ```
 
-## PCA
+## Fig S1B: PCA
 
 ```{r}
 
@@ -310,7 +312,7 @@ save(deg, file = "../data/R/DEG.Rdata")
 
 ```
 
-## GO enrichment of all genes
+## Fig 1C: GO enrichment of all genes
 
 ```{r}
 rm(list = ls())
@@ -350,7 +352,7 @@ dev.off()
 
 ```
 
-## GO enrichment of DEGs
+## Fig S2: GO enrichment of DEGs
 
 ```{r}
 rm(list = ls())
@@ -390,7 +392,7 @@ dev.off()
 
 ```
 
-## volcano and plot of DEG
+## Fig 1A and 1B: volcano and plot of DEG
 
 ```{r}
 rm(list = ls())
@@ -539,7 +541,7 @@ writexl::write_xlsx(dase, path = "../results/02_rmats_describe/rmats.filter.xlsx
 save(dase, file = "../results/02_rmats_describe/rmats.filter.Rdata")
 ```
 
-## Plot1: statistic of DASEs distribution from rMATS
+## Fig 2A: statistic of DASEs distribution from rMATS
 
 ```{r}
 
@@ -605,7 +607,7 @@ ggplot() +
 dev.off()
 ```
 
-## Compare DASEGs
+## Fig 2A: upset plot of DASEGs
 
 ```{r}
 rm(list = ls())
@@ -642,7 +644,11 @@ upset(upsetData, nsets = 5,
         list(query=intersects, params=list("SE","A3SS","RI","MXE"), color="dodgerblue4", active=T)))
 dev.off()
 
+```
 
+## Fig 2B: top DASEG
+
+```{r}
 # Top DASEG
 filt.daseg <- filter(sta.daseg, count>3)
 
@@ -677,38 +683,7 @@ ggplot(filt.daseg, aes(y=geneSymbol, x=count, fill=gene_biotype)) +
 dev.off()
 ```
 
-## Relationship between DEG and DASEG
-
-```{r}
-rm(list = ls())
-
-load("../data/R/DEG.Rdata")
-load("../results/02_rmats_describe/rmats.filter.Rdata")
-
-onlydeg <- deg[deg$change!="NOT",]
-onlydeg.list <- unique(onlydeg$external_gene_name)
-
-dase.list <- unique(dase$geneSymbol)
-
-library(ggvenn)
-
-list <- list("DEG" = onlydeg.list,
-             "DASEG" = dase.list)
-
-intersect(onlydeg.list, dase.list)
-
-pdf("../results/02_rmats_describe/venn_DEG_DASEG.pdf")
-ggvenn(list, 
-       show_elements = FALSE,
-       fill_color = c("#357EBD99","#D43F3A99"),
-       label_sep = "\n", stroke_size = 1.5,set_name_size = 5,
-       text_size = 9)
-dev.off()
-
-
-```
-
-## GO enrichment of DASEG
+## Fig 2C: GO enrichment of DASEG
 
 ```{r}
 rm(list = ls())
@@ -782,52 +757,6 @@ visCluster(object = dase.kmeans,
            sample.col = c(rep("#2E8B57",6),rep("#DC143C",5)))
            
 dev.off()
-
-```
-
-## rMAPS2 analysis
-
-```{r}
-rm(list = ls())
-
-dn <- read.table("../results/pcos_rmats_out/rMAPS2/resultMaps/pVal.dn.vs.bg.RNAmap.txt",
-                 sep = "\t", header = T)
-up <- read.table("../results/pcos_rmats_out/rMAPS2/resultMaps/pVal.up.vs.bg.RNAmap.txt",
-                 sep = "\t", header = T)
-
-dn$protein <- unlist(strsplit(dn$RBP, "[.]"))[seq(1,2*nrow(dn),2)]
-dn$motif <- unlist(strsplit(dn$RBP, "[.]"))[seq(2,2*nrow(dn),2)]
-dn$group <- "dn"
-
-up$protein <- unlist(strsplit(up$RBP, "[.]"))[seq(1,2*nrow(up),2)]
-up$motif <- unlist(strsplit(up$RBP, "[.]"))[seq(2,2*nrow(up),2)]
-up$group <- "up"
-
-rmaps <- rbind(dn,up)
-
-rmaps$symbol <- rmaps$protein
-
-rmaps$symbol <- gsub("HuR","ELAVL1",rmaps$symbol)
-rmaps$symbol <- gsub("SRp20","SRSF3",rmaps$symbol)
-rmaps$symbol <- gsub("SRp40","SRSF5",rmaps$symbol)
-rmaps$symbol <- gsub("Tra2-beta","TRA2B",rmaps$symbol)
-rmaps$symbol <- gsub("SF2-ASF","SRSF1",rmaps$symbol)
-
-rbp <- unique(rmaps$symbol)
-
-load("../data/R/DEG.Rdata")
-onlydeg <- filter(deg, change != "NOT")
-
-table(rbp %in% onlydeg$external_gene_name)
-
-
-# 
-rmaps$count <- as.numeric(1)
-
-rmaps2 <- aggregate(count ~ symbol, rmaps, sum) %>% 
-  arrange(desc(count))
-
-load("../results/02_rmats_describe/rmats.filter.Rdata")
 
 ```
 
@@ -959,7 +888,7 @@ save(switchListCQ, file = "../data/R/isoformswitch.Rdata")
 
 ```
 
-## Statistic PLOT of IsoformSwitchAnalyzeR results
+## Fig 3C and 3D: Statistic PLOT of IsoformSwitchAnalyzeR results
 
 ```{r}
 rm(list = ls())
@@ -1085,7 +1014,7 @@ ifMatrix <- extractGeneExpression(switchListCQ)
 
 ```
 
-## Compare ATSS, ATTS and AS
+## Fig 3B: Compare ATSS, ATTS and AS
 
 The difference between the isoforms involved in an isoform switch can arise by changes in three distinct biological mechanisms:
 
@@ -1158,6 +1087,8 @@ table(bioMechanismeAnalysis$featureCompared)
 
 ## GO enrichment of DASG
 
+Did not shown in the manuscript.
+
 ```{r}
 dasg.isoform <- unique(bioMechanismeAnalysis$gene_name)
 
@@ -1227,7 +1158,7 @@ visCluster(object = dase.kmeans,
 dev.off()
 ```
 
-# Compare DASEGs from rMATS and DASGs from isoformswitchanalyzeR
+# Fig 3A: Compare DASEGs from rMATS and DASGs from isoformswitchanalyzeR
 
 ```{r}
 rm(list = ls())
@@ -1308,86 +1239,4 @@ switchPlotTopSwitches(switchListCQ,
                       n=Inf,
                       pathToOutput = "../results/03_isoform/switchPlot/")
 
-```
-
-# GO enrichment of the intersection set
-
-```{r}
-interg <- intersect(dasg.isoform, dasg.rmats)
-library(xlsx)
-load("../data/R/fpkm.Rdata")
-
-dase.fpkm <- fpkm[fpkm$external_gene_name %in% interg,] %>% na.omit()
-dase.fpkm2 <- dase.fpkm[!duplicated(dase.fpkm$external_gene_name),]
-
-rownames(dase.fpkm2) <- dase.fpkm2$external_gene_name
-dase.fpkm2 <- dase.fpkm2[,-c(1,13:14)]
-
-# mfuzz
-set.seed(2024)
-getClusters(exp = dase.fpkm2) # check the optional cluster numbers
-
-dase.kmeans <- clusterData(exp = dase.fpkm2,cluster.method = "kmeans",
-                          cluster.num = 5)
-
-# plot line only
-visCluster(object = dase.kmeans)
-
-# plot heatmap only
-visCluster(object = dase.kmeans,
-           plot.type = "heatmap")
-
-write.xlsx(dase.kmeans$long.res, "../results/04_intersect/intersect_kmeans_dase.xlsx",
-           row.names = F, col.names = T)
-
-# enrichment analysis
-dase.enrich <- enrichCluster(object = dase.kmeans,
-                             OrgDb = "org.Hs.eg.db",
-                             type = "BP",
-                             pvalueCutoff = 0.05,
-                             topn = 5,
-                             seed = 2024)
-dase.enrich2 <- enrichCluster(object = dase.kmeans,
-                             OrgDb = "org.Hs.eg.db",
-                             type = "BP",
-                             pvalueCutoff = 0.05,
-                             topn = NULL,
-                             seed = 2024)
-
-write.xlsx(dase.enrich2, file = "../results/04_intersect/intersect_clustergvis_dase.enrich.xlsx")
-write.xlsx(dase.enrich, file = "../results/04_intersect/intersect_clustergvis_dase.enrichFilt.xlsx")
-
-markGenes <- c("IL33","USP25","SIRT2","YAP1","TAF1","TGFB1I1","SNRPN","BMAL1",
-               "GSK3B")
-
-
-pdf("../results/02_rmats_describe/clustergvis_dase.pdf", height = 10, width = 12, onefile = F)
-visCluster(object = dase.kmeans,
-           plot.type = "both",
-           show_row_dend = F,
-           cluster_columns = FALSE,
-           # markGenes = markGenes,
-           # markGenes.side = "left",
-           annoTerm.data = dase.enrich,
-           go.col = rep(ggsci::pal_d3()(2),each = 5),
-           line.side = "none",
-           sample.group = c(rep("Normal",6),rep("PCOS",5)),
-           genes.gp = c('italic',fontsize = 12,col = "black"),
-           border = FALSE,
-           ctAnno.col = ggsci::pal_d3()(5))
-dev.off()
-
-# # Mfuzz
-# ## filter low expression
-# dase.fpkm3 <- dase.fpkm2[apply(dase.fpkm2, 1, function(x) sum(x)>2),]
-# dase.fpkm.g <- data.matrix(dase.fpkm3)
-# dase.fpkm.g <- new('ExpressionSet', exprs=dase.fpkm.g)
-# library(Mfuzz)
-# dase.fpkm.g <- filter.NA(dase.fpkm.g, thres=0.25) # filter missing values
-# dase.fpkm.g <- filter.std(dase.fpkm.g,min.std=0)
-# 
-# dase.s <- standardise(dase.fpkm.g)
-# 
-# dase.mfuzz <- clusterData(exp = dase.fpkm2,cluster.method = "mfuzz",
-#                           cluster.num = 5)
 ```
