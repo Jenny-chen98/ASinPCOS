@@ -111,7 +111,7 @@ nohup bash ~/PCOS/program/star.sh ~/PCOS/data/raw/GSE138518_SRR_Acc_List.txt ~/r
 
 # Quantify the expression of genes using featureCounts
 
- 
+
 ```shell
 nohup featureCounts -t gene -f -O -s 2 -p -T 6 -F GTF -a ~/annotation/gencode/gencode.v40lift37.annotation.gtf -o ~/PCOS/data/processed/fcount_gse138518.txt *Aligned.sortedByCoord.out.bam &
 ```
@@ -143,4 +143,6 @@ conda activate rsem
 
 nohup cat ~/PCOS/data/raw/GSE138518_SRR_Acc_List.txt | while read line; do rsem-calculate-expression --paired-end --alignments -p 5 -no-bam-output -q ${line}Aligned.toTranscriptome.out.bam ~/reference/index/RSEM/gencode.v40lift37/gencode.v40lift37 ~/PCOS/results/rsem_GRCh37_out/${line}; done &
 ```
+
+
 
